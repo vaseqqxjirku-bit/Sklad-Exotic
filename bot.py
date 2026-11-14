@@ -1,6 +1,9 @@
 import os
 import asyncio
 import threading
+import unicodedata
+import ast
+import operator
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import discord
 from discord.ext import commands
@@ -30,6 +33,49 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+def normalize_name(name: str) -> str:
+    """Odstraní háčky, čárky, převede na malá písmena a ořízne mezery pro spolehlivé párování."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", name)
+        if unicodedata.category(c) != "Mn"
+    ).lower().strip()
+
+# Bezpečné vyhodnocení matematických operací (kalkulačka ve formuláři)
+operator_map = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.USub: operator.neg,
+}
+
+def parse_calc(expr_str: str) -> int:
+    """Umožňuje psát příklady typu 500+200 nebo 948-550 přímo do políčka."""
+    expr_str = expr_str.strip().replace(" ", "").replace(",", ".")
+    if not expr_str:
+        return 0
+    try:
+        node = ast.parse(expr_str, mode='eval')
+        def _eval(n):
+            if isinstance(n, ast.Constant):
+                if isinstance(n.value, (int, float)):
+                    return n.value
+                raise TypeError()
+            elif isinstance(n, ast.BinOp):
+                if type(n.op) in operator_map:
+                    return operator_map[type(n.op)](_eval(n.left), _eval(n.right))
+                raise TypeError()
+            elif isinstance(n, ast.UnaryOp):
+                if type(n.op) in operator_map:
+                    return operator_map[type(n.op)](_eval(n.operand))
+                raise TypeError()
+            else:
+                raise TypeError()
+        result = _eval(node.body)
+        return int(round(result))
+    except Exception:
+        return int(float(expr_str))
+
 def create_exotic_embed(items_dict: dict, total_money: int, history_list: list):
     embed = discord.Embed(
         title="🏎️ SKLAD EXOTIC – SOUČÁSTKY & FINANCE",
@@ -45,7 +91,7 @@ def create_exotic_embed(items_dict: dict, total_money: int, history_list: list):
     embed.add_field(name="💵 Finanční bilance", value=f"Celková částka vložena/přičtena: **`{total_money:,} $`**".replace(",", " "), inline=False)
     
     if history_list:
-        history_text = "\n".join(history_list[-5:])  # Zobrazí posledních 5 pohybů
+        history_text = "\n".join(history_list[-5:])
     else:
         history_text = "*Zatím žádné pohyby*"
     embed.add_field(name="📜 Poslední pohyby", value=history_text, inline=False)
@@ -57,24 +103,24 @@ class ExoticModal(discord.ui.Modal):
     def __init__(self, action_type: str):
         title_text = "Přidat součástky & finance" if action_type == "add" else "Odebrat součástky & finance"
         super().__init__(title=title_text)
-        self.action_type = action_type  # "add" nebo "remove"
+        self.action_type = action_type
         
         self.item_input = discord.ui.TextInput(
-            label="Název součástky (např. Turbo, Brzdy)",
+            label="Název součástky (např. soucastky)",
             style=discord.TextStyle.short,
             placeholder="Napiš název součástky...",
             required=True,
             max_length=50
         )
         self.amount_input = discord.ui.TextInput(
-            label="Počet kusů (číslo)",
+            label="Počet kusů (lze i příklad, např. 948-550)",
             style=discord.TextStyle.short,
-            placeholder="Např. 4",
+            placeholder="Např. 500 nebo 948-550",
             required=True,
             max_length=20
         )
         self.money_input = discord.ui.TextInput(
-            label="Peníze ($) - vloženo / přičteno",
+            label="Peníze ($) (lze i příklad, např. 150000+5000)",
             style=discord.TextStyle.short,
             placeholder="Např. 150000",
             required=True,
@@ -83,7 +129,7 @@ class ExoticModal(discord.ui.Modal):
         self.reason_input = discord.ui.TextInput(
             label="Důvod / Poznámka",
             style=discord.TextStyle.short,
-            placeholder="Např. Dovoz dílů, nákup od dodavatele...",
+            placeholder="Např. Dovoz dílů, nákup...",
             required=True,
             max_length=100
         )
@@ -95,14 +141,16 @@ class ExoticModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            qty = int(self.amount_input.value.strip())
-            money = int(self.money_input.value.strip())
+            # Kalkulačka vyhodnotí i zápisy typu "948-550"
+            qty = parse_calc(self.amount_input.value)
+            money = parse_calc(self.money_input.value)
+            
             if qty <= 0 or money < 0:
-                await interaction.response.send_message("❌ Množství a peníze musí být platná kladná čísla!", ephemeral=True)
+                await interaction.response.send_message("❌ Množství a peníze musí být platná kladná čísla (nebo výsledek příkladu)!", ephemeral=True)
                 return
 
             item_name = self.item_input.value.strip()
-            item_key = item_name.lower()  # Klíč pro spolehlivé hledání bez ohledu na velikost písmen
+            item_key = normalize_name(item_name)
             reason = self.reason_input.value.strip()
             user_name = interaction.user.display_name
 
@@ -111,12 +159,11 @@ class ExoticModal(discord.ui.Modal):
                 return
 
             embed = interaction.message.embeds[0]
-            items_dict = {}       # ukládá { "Název položky": počet }
-            items_lower_map = {}  # pomáhá mapovat malá písmena na původní název
+            items_dict = {}
+            items_map = {}
             total_money = 0
             history_list = []
             
-            # Načtení dat z embedu
             for field in embed.fields:
                 if "Aktuální stav součástek" in field.name and field.value != "*Sklad součástek je prázdný*":
                     for line in field.value.split("\n"):
@@ -125,8 +172,9 @@ class ExoticModal(discord.ui.Modal):
                             orig_name = parts[0].replace("*", "").strip()
                             try:
                                 q = int(parts[1].replace("ks", "").replace("`", "").strip())
+                                norm_key = normalize_name(orig_name)
                                 items_dict[orig_name] = q
-                                items_lower_map[orig_name.lower()] = orig_name
+                                items_map[norm_key] = orig_name
                             except ValueError:
                                 pass
                 elif "Finanční bilance" in field.name:
@@ -138,8 +186,7 @@ class ExoticModal(discord.ui.Modal):
                 elif "Poslední pohyby" in field.name and field.value != "*Zatím žádné pohyby*":
                     history_list = field.value.split("\n")
 
-            # Zjištění správného názvu položky (pokud už existuje, použije se, jinak se vytvoří nový)
-            real_item_name = items_lower_map.get(item_key, item_name)
+            real_item_name = items_map.get(item_key, item_name)
             current_qty = items_dict.get(real_item_name, 0)
             
             if self.action_type == "add":
@@ -155,15 +202,12 @@ class ExoticModal(discord.ui.Modal):
                 money_str = f"-{money:,} $".replace(",", " ")
                 action_desc = "odebral součástky"
 
-            # Zápis do historie
             log_entry = f"• **{user_name}** {action_desc}: `{sign_str} {real_item_name}` | Peníze: `{money_str}` (*{reason}*)"
             history_list.append(log_entry)
 
-            # Aktualizace panelu
             new_embed = create_exotic_embed(items_dict, total_money, history_list)
             await interaction.response.edit_message(embed=new_embed, view=ExoticView())
 
-            # Veřejná zpráva s mazáním po 5 minutách
             alert_msg = await interaction.channel.send(
                 content=f"🏎️ **POHYB NA SKLADĚ EXOTIC**\nUživatel {interaction.user.mention} **{action_desc}**: `{sign_str} {real_item_name}` (Aktuálně: `{items_dict[real_item_name]} ks`) | Finanční transakce: `{money_str}`\n**Důvod:** *{reason}*\n*(Zpráva se za 5 minut sama smaže)*"
             )
@@ -175,7 +219,7 @@ class ExoticModal(discord.ui.Modal):
 
         except Exception as e:
             if not interaction.response.is_done():
-                await interaction.response.send_message(f"❌ Nastala chyba: `{e}`", ephemeral=True)
+                await interaction.response.send_message(f"❌ Nastala chyba (zkontroluj zápis čísel/příkladu): `{e}`", ephemeral=True)
             else:
                 await interaction.followup.send(f"❌ Nastala chyba: `{e}`", ephemeral=True)
 
