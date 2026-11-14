@@ -115,14 +115,14 @@ class ExoticModal(discord.ui.Modal):
         self.amount_input = discord.ui.TextInput(
             label="Počet kusů (lze i příklad, např. 948-550)",
             style=discord.TextStyle.short,
-            placeholder="Např. 500 nebo 948-550",
+            placeholder="Např. 949 nebo 948-550",
             required=True,
             max_length=20
         )
         self.money_input = discord.ui.TextInput(
-            label="Peníze ($) (lze i příklad, např. 150000+5000)",
+            label="Peníze ($) (lze i příklad)",
             style=discord.TextStyle.short,
-            placeholder="Např. 150000",
+            placeholder="Např. 0 nebo 150000",
             required=True,
             max_length=20
         )
@@ -141,12 +141,12 @@ class ExoticModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            # Kalkulačka vyhodnotí i zápisy typu "948-550"
             qty = parse_calc(self.amount_input.value)
             money = parse_calc(self.money_input.value)
             
-            if qty <= 0 or money < 0:
-                await interaction.response.send_message("❌ Množství a peníze musí být platná kladná čísla (nebo výsledek příkladu)!", ephemeral=True)
+            # Povolíme zadat kladné číslo pro přičtení/odečtení
+            if qty == 0 or money < 0:
+                await interaction.response.send_message("❌ Množství nesmí být 0 a peníze nesmí být záporné!", ephemeral=True)
                 return
 
             item_name = self.item_input.value.strip()
@@ -171,7 +171,9 @@ class ExoticModal(discord.ui.Modal):
                             parts = line.split(":", 1)
                             orig_name = parts[0].replace("*", "").strip()
                             try:
-                                q = int(parts[1].replace("ks", "").replace("`", "").strip())
+                                # Správně načte i záporná čísla (např. -550)
+                                q_str = parts[1].replace("ks", "").replace("`", "").strip()
+                                q = int(q_str)
                                 norm_key = normalize_name(orig_name)
                                 items_dict[orig_name] = q
                                 items_map[norm_key] = orig_name
@@ -189,6 +191,7 @@ class ExoticModal(discord.ui.Modal):
             real_item_name = items_map.get(item_key, item_name)
             current_qty = items_dict.get(real_item_name, 0)
             
+            # MATEMATICKÉ OPERACE (zohledňuje i případný záporný stav)
             if self.action_type == "add":
                 items_dict[real_item_name] = current_qty + qty
                 total_money += money
@@ -219,7 +222,7 @@ class ExoticModal(discord.ui.Modal):
 
         except Exception as e:
             if not interaction.response.is_done():
-                await interaction.response.send_message(f"❌ Nastala chyba (zkontroluj zápis čísel/příkladu): `{e}`", ephemeral=True)
+                await interaction.response.send_message(f"❌ Nastala chyba: `{e}`", ephemeral=True)
             else:
                 await interaction.followup.send(f"❌ Nastala chyba: `{e}`", ephemeral=True)
 
