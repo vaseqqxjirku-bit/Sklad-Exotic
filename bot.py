@@ -1,5 +1,4 @@
 import os
-import asyncio
 import threading
 import unicodedata
 import ast
@@ -41,7 +40,7 @@ def normalize_name(name: str) -> str:
         if unicodedata.category(c) != "Mn"
     ).lower().strip()
 
-# Kalkulačka pro políčka ve formuláři (kdyby sis chtěl pomoct příkladem)
+# Kalkulačka pro políčka ve formuláři
 operator_map = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -171,7 +170,6 @@ class ExoticModal(discord.ui.Modal):
                             orig_name = parts[0].replace("*", "").strip()
                             raw_val_str = parts[1]
                             
-                            # Bezpečně vytáhne číslo ze stavu
                             match = re.search(r'(-?\d+)', raw_val_str)
                             if match:
                                 try:
@@ -201,7 +199,6 @@ class ExoticModal(discord.ui.Modal):
                 action_desc = "přidal součástky"
                 total_money += money
             else:
-                # Tady probíhá přesné odčítání (např. 948 - 550 = 398)
                 new_qty = current_qty - qty
                 sign_str = f"-{qty}"
                 money_str = f"-{money:,} $".replace(",", " ")
@@ -214,16 +211,9 @@ class ExoticModal(discord.ui.Modal):
             history_list.append(log_entry)
 
             new_embed = create_exotic_embed(items_dict, total_money, history_list)
+            
+            # Okamžitá a tichá aktualizace hlavního panelu (žádný ping v chatu)
             await interaction.response.edit_message(embed=new_embed, view=ExoticView())
-
-            alert_msg = await interaction.channel.send(
-                content=f"🏎️ **POHYB NA SKLADĚ EXOTIC**\nUživatel {interaction.user.mention} **{action_desc}**: `{sign_str} {real_item_name}` (Aktuálně: `{new_qty} ks`) | Finanční transakce: `{money_str}`\n**Důvod:** *{reason}*\n*(Zpráva se za 5 minut sama smaže)*"
-            )
-            await asyncio.sleep(300)
-            try:
-                await alert_msg.delete()
-            except discord.HTTPException:
-                pass
 
         except Exception as e:
             if not interaction.response.is_done():
@@ -246,7 +236,7 @@ class ExoticView(discord.ui.View):
 @bot.event
 async def on_ready():
     bot.add_view(ExoticView())
-    print(f"Bot je online jako {bot.user}")
+    print(f"Exotic Bot je online jako {bot.user}")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
