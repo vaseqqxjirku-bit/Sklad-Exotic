@@ -4,6 +4,7 @@ import threading
 import unicodedata
 import ast
 import operator
+import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import discord
 from discord.ext import commands
@@ -34,13 +35,13 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 def normalize_name(name: str) -> str:
-    """Odstraní háčky, čárky, převede na malá písmena a ořízne mezery pro spolehlivé párování."""
+    """Sjednotí název (odstraní diakritiku, mezery, malá písmena)."""
     return "".join(
         c for c in unicodedata.normalize("NFD", name)
         if unicodedata.category(c) != "Mn"
     ).lower().strip()
 
-# Bezpečné vyhodnocení matematických operací (kalkulačka ve formuláři)
+# Kalkulačka pro políčka ve formuláři (kdyby sis chtěl pomoct příkladem)
 operator_map = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -50,7 +51,6 @@ operator_map = {
 }
 
 def parse_calc(expr_str: str) -> int:
-    """Umožňuje psát příklady typu 500+200 nebo 948-550 přímo do políčka."""
     expr_str = expr_str.strip().replace(" ", "").replace(",", ".")
     if not expr_str:
         return 0
@@ -71,8 +71,7 @@ def parse_calc(expr_str: str) -> int:
                 raise TypeError()
             else:
                 raise TypeError()
-        result = _eval(node.body)
-        return int(round(result))
+        return int(round(_eval(node.body)))
     except Exception:
         return int(float(expr_str))
 
@@ -106,30 +105,30 @@ class ExoticModal(discord.ui.Modal):
         self.action_type = action_type
         
         self.item_input = discord.ui.TextInput(
-            label="Název součástky (např. soucastky)",
+            label="Název položky (např. soucastky)",
             style=discord.TextStyle.short,
-            placeholder="Napiš název součástky...",
+            placeholder="Napiš název...",
             required=True,
             max_length=50
         )
         self.amount_input = discord.ui.TextInput(
-            label="Počet kusů (lze i příklad, např. 948-550)",
+            label="Počet kusů",
             style=discord.TextStyle.short,
-            placeholder="Např. 949 nebo 948-550",
+            placeholder="Např. 550",
             required=True,
             max_length=20
         )
         self.money_input = discord.ui.TextInput(
-            label="Peníze ($) (lze i příklad)",
+            label="Peníze ($)",
             style=discord.TextStyle.short,
-            placeholder="Např. 0 nebo 150000",
+            placeholder="Např. 0",
             required=True,
             max_length=20
         )
         self.reason_input = discord.ui.TextInput(
             label="Důvod / Poznámka",
             style=discord.TextStyle.short,
-            placeholder="Např. Dovoz dílů, nákup...",
+            placeholder="Např. Odpis, nákup...",
             required=True,
             max_length=100
         )
@@ -144,9 +143,8 @@ class ExoticModal(discord.ui.Modal):
             qty = parse_calc(self.amount_input.value)
             money = parse_calc(self.money_input.value)
             
-            # Povolíme zadat kladné číslo pro přičtení/odečtení
-            if qty == 0 or money < 0:
-                await interaction.response.send_message("❌ Množství nesmí být 0 a peníze nesmí být záporné!", ephemeral=True)
+            if qty <= 0 or money < 0:
+                await interaction.response.send_message("❌ Množství musí být větší než 0 a peníze nesmí být záporné!", ephemeral=True)
                 return
 
             item_name = self.item_input.value.strip()
@@ -164,21 +162,25 @@ class ExoticModal(discord.ui.Modal):
             total_money = 0
             history_list = []
             
+            # Načtení aktuálního stavu z embedu
             for field in embed.fields:
                 if "Aktuální stav součástek" in field.name and field.value != "*Sklad součástek je prázdný*":
                     for line in field.value.split("\n"):
                         if "**" in line and ":" in line:
                             parts = line.split(":", 1)
                             orig_name = parts[0].replace("*", "").strip()
-                            try:
-                                # Správně načte i záporná čísla (např. -550)
-                                q_str = parts[1].replace("ks", "").replace("`", "").strip()
-                                q = int(q_str)
-                                norm_key = normalize_name(orig_name)
-                                items_dict[orig_name] = q
-                                items_map[norm_key] = orig_name
-                            except ValueError:
-                                pass
+                            raw_val_str = parts[1]
+                            
+                            # Bezpečně vytáhne číslo ze stavu
+                            match = re.search(r'(-?\d+)', raw_val_str)
+                            if match:
+                                try:
+                                    q = int(match.group(1))
+                                    norm_key = normalize_name(orig_name)
+                                    items_dict[orig_name] = q
+                                    items_map[norm_key] = orig_name
+                                except ValueError:
+                                    pass
                 elif "Finanční bilance" in field.name:
                     try:
                         val = field.value.split("**`")[1].split(" $`**")[0].replace(" ", "").replace(",", "")
@@ -191,19 +193,22 @@ class ExoticModal(discord.ui.Modal):
             real_item_name = items_map.get(item_key, item_name)
             current_qty = items_dict.get(real_item_name, 0)
             
-            # MATEMATICKÉ OPERACE (zohledňuje i případný záporný stav)
+            # MATEMATIKA: Přičítání / Odbírání
             if self.action_type == "add":
-                items_dict[real_item_name] = current_qty + qty
-                total_money += money
+                new_qty = current_qty + qty
                 sign_str = f"+{qty}"
                 money_str = f"+{money:,} $".replace(",", " ")
                 action_desc = "přidal součástky"
+                total_money += money
             else:
-                items_dict[real_item_name] = current_qty - qty
-                total_money -= money
+                # Tady probíhá přesné odčítání (např. 948 - 550 = 398)
+                new_qty = current_qty - qty
                 sign_str = f"-{qty}"
                 money_str = f"-{money:,} $".replace(",", " ")
                 action_desc = "odebral součástky"
+                total_money -= money
+
+            items_dict[real_item_name] = new_qty
 
             log_entry = f"• **{user_name}** {action_desc}: `{sign_str} {real_item_name}` | Peníze: `{money_str}` (*{reason}*)"
             history_list.append(log_entry)
@@ -212,7 +217,7 @@ class ExoticModal(discord.ui.Modal):
             await interaction.response.edit_message(embed=new_embed, view=ExoticView())
 
             alert_msg = await interaction.channel.send(
-                content=f"🏎️ **POHYB NA SKLADĚ EXOTIC**\nUživatel {interaction.user.mention} **{action_desc}**: `{sign_str} {real_item_name}` (Aktuálně: `{items_dict[real_item_name]} ks`) | Finanční transakce: `{money_str}`\n**Důvod:** *{reason}*\n*(Zpráva se za 5 minut sama smaže)*"
+                content=f"🏎️ **POHYB NA SKLADĚ EXOTIC**\nUživatel {interaction.user.mention} **{action_desc}**: `{sign_str} {real_item_name}` (Aktuálně: `{new_qty} ks`) | Finanční transakce: `{money_str}`\n**Důvod:** *{reason}*\n*(Zpráva se za 5 minut sama smaže)*"
             )
             await asyncio.sleep(300)
             try:
