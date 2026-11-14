@@ -102,6 +102,7 @@ class ExoticModal(discord.ui.Modal):
                 return
 
             item_name = self.item_input.value.strip()
+            item_key = item_name.lower()  # Klíč pro spolehlivé hledání bez ohledu na velikost písmen
             reason = self.reason_input.value.strip()
             user_name = interaction.user.display_name
 
@@ -110,7 +111,8 @@ class ExoticModal(discord.ui.Modal):
                 return
 
             embed = interaction.message.embeds[0]
-            items_dict = {}
+            items_dict = {}       # ukládá { "Název položky": počet }
+            items_lower_map = {}  # pomáhá mapovat malá písmena na původní název
             total_money = 0
             history_list = []
             
@@ -120,15 +122,15 @@ class ExoticModal(discord.ui.Modal):
                     for line in field.value.split("\n"):
                         if "**" in line and ":" in line:
                             parts = line.split(":", 1)
-                            name = parts[0].replace("*", "").strip()
+                            orig_name = parts[0].replace("*", "").strip()
                             try:
                                 q = int(parts[1].replace("ks", "").replace("`", "").strip())
-                                items_dict[name] = q
+                                items_dict[orig_name] = q
+                                items_lower_map[orig_name.lower()] = orig_name
                             except ValueError:
                                 pass
                 elif "Finanční bilance" in field.name:
                     try:
-                        # Vytáhne číslo z formátu s dolarovými znaky
                         val = field.value.split("**`")[1].split(" $`**")[0].replace(" ", "").replace(",", "")
                         total_money = int(val)
                     except Exception:
@@ -136,24 +138,25 @@ class ExoticModal(discord.ui.Modal):
                 elif "Poslední pohyby" in field.name and field.value != "*Zatím žádné pohyby*":
                     history_list = field.value.split("\n")
 
-            # Výpočet nových hodnot
-            current_qty = items_dict.get(item_name, 0)
+            # Zjištění správného názvu položky (pokud už existuje, použije se, jinak se vytvoří nový)
+            real_item_name = items_lower_map.get(item_key, item_name)
+            current_qty = items_dict.get(real_item_name, 0)
             
             if self.action_type == "add":
-                items_dict[item_name] = current_qty + qty
+                items_dict[real_item_name] = current_qty + qty
                 total_money += money
                 sign_str = f"+{qty}"
                 money_str = f"+{money:,} $".replace(",", " ")
                 action_desc = "přidal součástky"
             else:
-                items_dict[item_name] = current_qty - qty
+                items_dict[real_item_name] = current_qty - qty
                 total_money -= money
                 sign_str = f"-{qty}"
                 money_str = f"-{money:,} $".replace(",", " ")
                 action_desc = "odebral součástky"
 
             # Zápis do historie
-            log_entry = f"• **{user_name}** {action_desc}: `{sign_str} {item_name}` | Peníze: `{money_str}` (*{reason}*)"
+            log_entry = f"• **{user_name}** {action_desc}: `{sign_str} {real_item_name}` | Peníze: `{money_str}` (*{reason}*)"
             history_list.append(log_entry)
 
             # Aktualizace panelu
@@ -162,7 +165,7 @@ class ExoticModal(discord.ui.Modal):
 
             # Veřejná zpráva s mazáním po 5 minutách
             alert_msg = await interaction.channel.send(
-                content=f"🏎️ **POHYB NA SKLADĚ EXOTIC**\nUživatel {interaction.user.mention} **{action_desc}**: `{sign_str} {item_name}` | Finanční transakce: `{money_str}`\n**Důvod:** *{reason}*\n*(Zpráva se za 5 minut sama smaže)*"
+                content=f"🏎️ **POHYB NA SKLADĚ EXOTIC**\nUživatel {interaction.user.mention} **{action_desc}**: `{sign_str} {real_item_name}` (Aktuálně: `{items_dict[real_item_name]} ks`) | Finanční transakce: `{money_str}`\n**Důvod:** *{reason}*\n*(Zpráva se za 5 minut sama smaže)*"
             )
             await asyncio.sleep(300)
             try:
